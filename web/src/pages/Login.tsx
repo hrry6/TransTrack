@@ -7,8 +7,8 @@ import { login } from "@/services/api";
 
 export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("contact@nexora.com");
+  const [password, setPassword] = useState("Secure123");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
