@@ -6,8 +6,11 @@
 import type { Transaction, TransactionStatus, NewBackendTransaction } from "@/types/transaction";
 import { supabase } from "@/integrations/supabase/client";
 
-// Saat dev lokal, proxy Vite meneruskan /api/* ke localhost:5000 secara otomatis.
-// const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+
+function withApiBase(path: string): string {
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
 
 /** Raw shape from new backend response (transactions/user) */
 
@@ -69,7 +72,7 @@ async function fetchTransactionsFromBackend(userId: string): Promise<Transaction
     const token = localStorage.getItem("auth_token");
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`/api/transactions/user`, { headers });
+    const res = await fetch(withApiBase(`/api/transactions/user`), { headers });
     if (!res.ok) return null;
     const json = await res.json();
     // New backend format: { success, data: { transactions: [...] } }
@@ -212,9 +215,8 @@ export interface LoginResult {
 }
 
 export async function login(credentials: LoginCredentials): Promise<LoginResult> {
-  const base = "";
   try {
-    const res = await fetch(`${base}/api/auth/login`, {
+    const res = await fetch(withApiBase(`/api/auth/login`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: credentials.email, password: credentials.password }),
@@ -278,12 +280,11 @@ export async function loadUserProfile(): Promise<{ isPublic: boolean; monitoring
 }
 
 export async function deleteShareId(): Promise<{ success: boolean; error?: string }> {
-  const base = "";
   try {
     const token = localStorage.getItem("auth_token");
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`${base}/api/user/share/delete`, { method: "DELETE", headers });
+    const res = await fetch(withApiBase(`/api/user/share/delete`), { method: "DELETE", headers });
     if (!res.ok) return { success: false, error: "Gagal menghapus ID monitoring." };
 
     // Simpan ke database
@@ -301,12 +302,11 @@ export async function deleteShareId(): Promise<{ success: boolean; error?: strin
 }
 
 export async function generateShareId(): Promise<{ success: boolean; monitoringId?: string; error?: string }> {
-  const base = "";
   try {
     const token = localStorage.getItem("auth_token");
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`${base}/api/user/share/generate`, { method: "POST", headers });
+    const res = await fetch(withApiBase(`/api/user/share/generate`), { method: "POST", headers });
     if (!res.ok) return { success: false, error: "Gagal generate ID monitoring." };
     const json = await res.json();
     console.log("[generateShareId] response:", JSON.stringify(json));
@@ -356,8 +356,6 @@ export interface PublicUserTransactionsResult {
 }
 
 export async function fetchPublicUserData(userId: string): Promise<PublicUserTransactionsResult> {
-  const base = "";
-  
   try {
     const token = localStorage.getItem("auth_token");
     const headers: Record<string, string> = {
@@ -368,7 +366,7 @@ export async function fetchPublicUserData(userId: string): Promise<PublicUserTra
       headers['Authorization'] = `Bearer ${token}`;
     }
     
-    const url = `${base}/api/public/share/${userId}`;
+    const url = withApiBase(`/api/public/share/${userId}`);
     console.log('🌐 Fetching:', url);
     
     const res = await fetch(url, { method: 'GET', headers });
