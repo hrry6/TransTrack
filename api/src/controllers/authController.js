@@ -17,7 +17,10 @@ const register = async (req, res) => {
             [company_name, email, hashedPassword]
         );
         res.status(201).json({ message: "User created", user: result.rows[0] });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        console.error('[REGISTER_ERROR]', { code: err.code, message: err.message, detail: err.detail });
+        return res.status(500).json({ error: err.message });
+    }
 };
 
 const login = async (req, res) => {
@@ -31,7 +34,10 @@ const login = async (req, res) => {
         
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
         res.json({ token, user: { id: user.id, company_name: user.company_name } });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        console.error('[LOGIN_ERROR]', { code: err.code, message: err.message, detail: err.detail });
+        return res.status(500).json({ error: err.message });
+    }
 };
 
 const generateShareId = async (req, res) => {
