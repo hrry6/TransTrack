@@ -9,12 +9,22 @@ const CONTRACT_ABI = [
   "function recordTransaction(string memory _uuid, string memory _cid) public returns (bool)"
 ];
 
-const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { staticNetwork: true });
-const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet);
+function getWriteContract() {
+  if (!PRIVATE_KEY) {
+    throw new Error("PRIVATE_KEY is not set");
+  }
+  if (!CONTRACT_ADDRESS) {
+    throw new Error("CONTRACT_ADDRESS is not set");
+  }
+
+  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { staticNetwork: true });
+  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+  return new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet);
+}
 
 const recordOnChain = async (uuid, cid) => {
   try {
+    const contract = getWriteContract();
     console.log(`🔗 Recording to Blockchain... UUID: ${uuid}, CID: ${cid}`);
     const tx = await contract.recordTransaction(uuid, cid);
     console.log(`⏳ Transaction sent: ${tx.hash}`);
