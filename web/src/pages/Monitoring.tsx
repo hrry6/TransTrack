@@ -315,14 +315,16 @@ export default function Monitoring() {
   const [publicError, setPublicError] = useState<string | null>(null);
   const [userName, setUserName] = useState<string>("");
 
+  // 1. FUNGSI FETCH API (Bisa dipanggil oleh tombol Refresh)
   const loadData = async () => {
+    if (!companyId) return;
+    
     setLoading(true);
     setPublicError(null);
     try {
       const result = await fetchPublicUserData(companyId);
       if (result.notFound || result.error) {
         setPublicError(result.error || "Pengguna tidak ditemukan.");
-        setTransactions([]);
         setAllTransactions([]);
         setSummary({ total: 0, totalAmount: 0 });
         return;
@@ -330,49 +332,148 @@ export default function Monitoring() {
 
       const resolvedName = result.user?.name || companyId;
       setUserName(resolvedName);
-      setAllTransactions(result.transactions);
+      setAllTransactions(result.transactions); 
 
-      // Simpan ke riwayat pencarian
       import("@/lib/recentSearches").then(({ addRecentSearch }) => {
         addRecentSearch(companyId, resolvedName);
       });
 
-      // Client-side filter
-      let filtered = result.transactions.filter((t) => {
-        const matchSearch =
-          !search ||
-          t.sender.toLowerCase().includes(search.toLowerCase()) ||
-          t.receiver.toLowerCase().includes(search.toLowerCase()) ||
-          t.message?.toLowerCase().includes(search.toLowerCase()) ||
-          t.paymentType.toLowerCase().includes(search.toLowerCase());
-        const matchPayment = paymentFilter === "all" || t.paymentType === paymentFilter;
-        return matchSearch && matchPayment;
-      });
-
-      // Sort
-      filtered = [...filtered].sort((a, b) => {
-        const av = a[sortField as keyof Transaction];
-        const bv = b[sortField as keyof Transaction];
-        const cmp =
-          typeof av === "number" && typeof bv === "number"
-            ? av - bv
-            : String(av).localeCompare(String(bv));
-        return sortDir === "asc" ? cmp : -cmp;
-      });
-
-      const total = filtered.length;
-      const totalAmount = filtered.reduce((s, t) => s + t.amountNum, 0);
-      setTotalFiltered(total);
-      setTotalPages(Math.max(1, Math.ceil(total / PER_PAGE)));
-      setSummary({ total, totalAmount });
-      setTransactions(filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE));
+    } catch (err) {
+      setPublicError("Gagal memuat data dari server.");
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { setPage(1); }, [search, paymentFilter, companyId]);
-  useEffect(() => { loadData(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [search, page, sortField, sortDir, companyId, paymentFilter]);
+  // 2. EFFECT INIT (Panggil loadData 1x saat pertama kali dibuka)
+  useEffect(() => {
+    loadData();
+  }, [companyId]);
+
+  // 3. EFFECT LOKAL (FILTERING, SORTING, PAGINATION)
+  useEffect(() => {
+    if (!allTransactions || allTransactions.length === 0) {
+      setTransactions([]);
+      setSummary({ total: 0, totalAmount: 0 });
+      return;
+    }
+
+    let filtered = allTransactions.filter((t) => {
+      const searchLower = search.toLowerCase();
+      const matchSearch =
+        !search ||
+        (t.sender || "").toLowerCase().includes(searchLower) ||
+        (t.receiver || "").toLowerCase().includes(searchLower) ||
+        (t.message || "").toLowerCase().includes(searchLower) ||
+        (t.paymentType || "").toLowerCase().includes(searchLower);
+      
+      const matchPayment = paymentFilter === "all" || t.paymentType === paymentFilter;
+      return matchSearch && matchPayment;
+    });
+
+    filtered = [...filtered].sort((a, b) => {
+      const av = a[sortField as keyof Transaction];
+      const bv = b[sortField as keyof Transaction];
+      const cmp = typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
+    const total = filtered.length;
+    const totalAmount = filtered.reduce((s, t) => s + t.amountNum, 0);
+    
+    setTotalFiltered(total);
+    setTotalPages(Math.max(1, Math.ceil(total / PER_PAGE)));
+    setSummary({ total, totalAmount });
+    
+    setTransactions(filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE));
+
+  }, [allTransactions, search, paymentFilter, sortField, sortDir, page]);
+
+  useEffect(() => { setPage(1); }, [search, paymentFilter]);
+
+  // 1. EFFECT FETCH API (HANYA BERJALAN 1X SAAT COMPONENT MOUNT / COMPANY ID BERUBAH)
+  useEffect(() => {
+    const fetchApiData = async () => {
+      if (!companyId) return;
+      
+      setLoading(true);
+      setPublicError(null);
+      try {
+        const result = await fetchPublicUserData(companyId);
+        if (result.notFound || result.error) {
+          setPublicError(result.error || "Pengguna tidak ditemukan.");
+          setAllTransactions([]);
+          setSummary({ total: 0, totalAmount: 0 });
+          return;
+        }
+
+        const resolvedName = result.user?.name || companyId;
+        setUserName(resolvedName);
+        setAllTransactions(result.transactions); // Simpan data mentah ke state lokal
+
+        import("@/lib/recentSearches").then(({ addRecentSearch }) => {
+          addRecentSearch(companyId, resolvedName);
+        });
+
+      } catch (err) {
+        setPublicError("Gagal memuat data dari server.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchApiData();
+  }, [companyId]);
+
+  // 2. EFFECT LOKAL (FILTERING, SORTING, PAGINATION)
+  // Ini akan otomatis berjalan instan tanpa loading setiap kali kamu ngetik search atau klik pagination
+  useEffect(() => {
+    if (!allTransactions || allTransactions.length === 0) {
+      setTransactions([]);
+      setSummary({ total: 0, totalAmount: 0 });
+      return;
+    }
+
+    // Client-side filter
+    let filtered = allTransactions.filter((t) => {
+      const matchSearch =
+        !search ||
+        t.sender.toLowerCase().includes(search.toLowerCase()) ||
+        t.receiver.toLowerCase().includes(search.toLowerCase()) ||
+        (t.message || "").toLowerCase().includes(search.toLowerCase()) ||
+        t.paymentType.toLowerCase().includes(search.toLowerCase());
+      
+      const matchPayment = paymentFilter === "all" || t.paymentType === paymentFilter;
+      return matchSearch && matchPayment;
+    });
+
+    // Sort
+    filtered = [...filtered].sort((a, b) => {
+      const av = a[sortField as keyof Transaction];
+      const bv = b[sortField as keyof Transaction];
+      const cmp = typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
+    // Update Summary & Pagination states
+    const total = filtered.length;
+    const totalAmount = filtered.reduce((s, t) => s + t.amountNum, 0);
+    
+    setTotalFiltered(total);
+    setTotalPages(Math.max(1, Math.ceil(total / PER_PAGE)));
+    setSummary({ total, totalAmount });
+    
+    // Potong array sesuai halaman (Pagination)
+    setTransactions(filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE));
+
+  }, [allTransactions, search, paymentFilter, sortField, sortDir, page]);
+
+  // Reset page ke 1 kalau user ngetik di search atau ganti filter
+  useEffect(() => { setPage(1); }, [search, paymentFilter]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -479,7 +580,7 @@ export default function Monitoring() {
                   loadData(); 
                 }
               }}
-              placeholder="Masukkan User ID... {ex: ce466....} atau ketik 'my_data' untuk cari data pribadi"
+              placeholder="Cari transaksi berdasarkan nama pengirim, penerima, atau pesan..."
               className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-border bg-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors text-sm"
             />
           </div>

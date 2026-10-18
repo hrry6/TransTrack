@@ -13,7 +13,7 @@ const register = async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         const result = await pool.query(
-            'INSERT INTO users (company_name, email, password) VALUES ($1, $2, $3) RETURNING id, email',
+            'INSERT INTO users (company_name, email, password) VALUES (\$1, \$2, \$3) RETURNING id, email',
             [company_name, email, hashedPassword]
         );
         res.status(201).json({ message: "User created", user: result.rows[0] });
@@ -26,8 +26,9 @@ const register = async (req, res) => {
 const login = async (req, res) => {
     const { email, password } = req.body;
     try {
-        const userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        const userResult = await pool.query('SELECT * FROM users WHERE email = \$1', [email]);
         if (userResult.rows.length === 0) return res.status(404).json({ message: "User not found" });
+        
         const user = userResult.rows[0];
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(401).json({ message: "Invalid password" });
@@ -43,20 +44,46 @@ const login = async (req, res) => {
 const generateShareId = async (req, res) => {
     try {
         const result = await pool.query(
-            'UPDATE users SET share_id = gen_random_uuid(), share_enabled = TRUE WHERE id = $1 RETURNING share_id',
+            'UPDATE users SET share_id = gen_random_uuid(), share_enabled = TRUE WHERE id = \$1 RETURNING share_id',
             [req.user.id]
         );
         res.json({ share_id: result.rows[0].share_id });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { 
+        res.status(500).json({ error: err.message }); 
+    }
 };
 
 const deleteShareId = async (req, res) => {
     try {
-        await pool.query('UPDATE users SET share_id = NULL, share_enabled = FALSE WHERE id = $1', [req.user.id]);
+        await pool.query('UPDATE users SET share_id = NULL, share_enabled = FALSE WHERE id = \$1', [req.user.id]);
         res.json({ message: "Sharing disabled" });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { 
+        res.status(500).json({ error: err.message }); 
+    }
 };
 
+// --- HELPER FUNCTION UNTUK IPFS FALLBACK ---
+const fetchIpfsWithFallback = async (cid) => {
+    const gateways = [
+        `https://gateway.pinata.cloud/ipfs/${cid}`,
+        `https://ipfs.io/ipfs/${cid}`,
+        `https://dweb.link/ipfs/${cid}`,
+        `https://cloudflare-ipfs.com/ipfs/${cid}`
+    ];
+
+    for (const url of gateways) {
+        try {
+            const response = await axios.get(url, { timeout: 10000 });
+            return response.data;
+        } catch (err) {
+            console.warn(`[IPFS] Gagal fetch dari ${url} (Status: ${err.response?.status || err.code}). Mencoba gateway lain...`);
+            continue;
+        }
+    }
+    throw new Error(`Semua gateway IPFS gagal memuat CID: ${cid}`);
+};
+
+// --- FUNGSI UTAMA ---
 const getUserByShareId = async (req, res) => {
     const { shareId } = req.params;
     const client = await pool.connect();
@@ -132,7 +159,6 @@ const getUserByShareId = async (req, res) => {
             userId = user.id;
         }
 
-        // Ambil transaksi yang melibatkan user sebagai sender ATAU receiver
         const txRes = await client.query(
             `SELECT 
                 t.id,
@@ -160,53 +186,49 @@ const getUserByShareId = async (req, res) => {
 
         for (const item of transactions) {
             try {
-                await sleep(800);
+                // Jeda 1.5 detik untuk menghindari rate-limit
+                await sleep(1500); 
 
-                const ipfsResponse = await axios.get(
-                    `https://gateway.pinata.cloud/ipfs/${item.cid}`,
-                    {
-                        headers: { 'Authorization': `Bearer ${process.env.PINATA_READ_JWT}` },
-                        timeout: 15000
-                    }
-                );
+                // Ambil data dari IPFS
+                const ipfsData = await fetchIpfsWithFallback(item.cid);
 
-                const ipfsData = ipfsResponse.data;
+                // VALIDASI LAPIS 1: Perbandingan aman tanpa mempedulikan tipe data (String/Number)
+                const isSenderValid = String(item.sender_id) === String(ipfsData.sender_id);
+                const isReceiverValid = String(item.receiver_id) === String(ipfsData.receiver_id);
+                const isAmountValid = Number(item.amount) === Number(ipfsData.amount);
+                const isPaymentValid = item.payment_type === ipfsData.payment_type;
+                const isMessageValid = item.message === ipfsData.message;
+                
+                // Cek payload (samakan formatnya)
+                const dbPayload = JSON.stringify(JSON.parse(item.encrypted_payload));
+                const ipfsPayload = JSON.stringify(ipfsData.payload);
+                const isPayloadValid = dbPayload === ipfsPayload;
 
-                const dbFullData = {
-                    sender_id: item.sender_id,
-                    receiver_id: item.receiver_id,
-                    amount: parseFloat(item.amount),
-                    payment_type: item.payment_type,
-                    message: item.message,
-                    payload: JSON.parse(item.encrypted_payload),
-                    created_at: new Date(item.created_at).toISOString()
-                };
+                // Kita abaikan pengecekan waktu (created_at) dari validasi strict karena zona waktu sering bergeser
+                const isDataValid = isSenderValid && isReceiverValid && isAmountValid && isPaymentValid && isMessageValid && isPayloadValid;
 
-                const ipfsReconstructed = {
-                    sender_id: ipfsData.sender_id,
-                    receiver_id: ipfsData.receiver_id,
-                    amount: ipfsData.amount,
-                    payment_type: ipfsData.payment_type,
-                    message: ipfsData.message,
-                    payload: ipfsData.payload,
-                    created_at: ipfsData.created_at
-                };
-
-                const isDataValid =
-                    JSON.stringify(dbFullData) ===
-                    JSON.stringify(ipfsReconstructed);
-
+                // VALIDASI LAPIS 2: CID Database vs CID Blockchain
                 let isCidValid = false;
                 try {
-                    const blockchainData = await getTransactionFromChain(item.id);
+                    const blockchainData = await getTransactionFromChain(item.id); 
                     const [txUuid, blockchainCid] = blockchainData.split('.');
                     isCidValid = (blockchainCid === item.cid);
                 } catch (blockchainError) {
+                    console.error(`[Blockchain] Error di TX ${item.id}:`, blockchainError.message);
                     isCidValid = false;
                 }
 
+                // TAMPILKAN DI TERMINAL JIKA ADA TRANSAKSI YANG DITOLAK
+                if (!isDataValid || !isCidValid) {
+                    console.log(`\n❌ [FILTERED] Transaksi ${item.id} gagal validasi!`);
+                    console.log(`   - Data Cocok? ${isDataValid} (Sender: ${isSenderValid}, Amount: ${isAmountValid}, Payload: ${isPayloadValid})`);
+                    console.log(`   - CID Cocok?  ${isCidValid}`);
+                }
+
+                // Jika lolos verifikasi, masukkan ke array
                 if (isDataValid && isCidValid) {
                     verifiedTransactions.push({
+                        id: item.id,
                         pengirim: item.sender_name,
                         penerima: item.receiver_name,
                         tanggal: item.created_at,
@@ -217,7 +239,7 @@ const getUserByShareId = async (req, res) => {
                             cid: item.cid,
                             tx_hash: item.blockchain_tx_hash,
                             url_ipfs: `https://gateway.pinata.cloud/ipfs/${item.cid}`,
-                            explorer_url: `https://amoy.polygonscan.com/tx/${item.blockchain_tx_hash}`
+                            url_polygonscan: `https://amoy.polygonscan.com/tx/${item.blockchain_tx_hash}`
                         }
                     });
                 }
@@ -226,7 +248,6 @@ const getUserByShareId = async (req, res) => {
                 console.error(`Validation error for transaction ${item.id}:`, err.message);
             }
         }
-
         const total_transaksi = verifiedTransactions.length;
         const total_nilai = verifiedTransactions.reduce(
             (sum, item) => sum + item.nominal,
